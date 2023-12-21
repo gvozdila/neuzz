@@ -55,6 +55,7 @@ SPLIT_RATIO = len(seed_list)
 argvv = sys.argv[1:]
 device = "cpu"
 
+
 # process training data from afl raw data
 def process_data():
     global MAX_BITMAP_SIZE
@@ -332,7 +333,7 @@ def compute_loss_grad(model,  loss_fn,  sample, target):
 # compute gradient for given input
 def gen_adv2_pytorch(f, fl, model, loss_func, idxx, splice):
     """
-           index =  of interesting feature,
+           f -- index =  of interesting feature,
            fl = list of two random input seeds(with index idxx),
            model,
            layer_list = (layer.name, layer)  from model.layers
@@ -344,7 +345,7 @@ def gen_adv2_pytorch(f, fl, model, loss_func, idxx, splice):
     # Create np.array with targets shape (1,MAX_BITMAP_SIZE) - no need to target.unsqueeze(0) later. Or just pass Y[0]
     bitmap = np.zeros((1, MAX_BITMAP_SIZE))
     # Set idxx bit
-    bitmap[0][idxx-1] = 1
+    bitmap[0][f] = 1
     Y = torch.tensor(bitmap)
 
 #    grads = K.gradients(loss, model.input)[0]
@@ -419,16 +420,21 @@ def gen_adv3(f, fl, model, layer_list, idxx, splice):
 # compute gradient for given input without sign
 def gen_adv3_pytorch(f, fl, model, loss_func, idxx, splice):
     adv_list = []
-    loss = layer_list[-2][1].output[:, f]
-    grads = K.gradients(loss, model.input)[0]
-    iterate = K.function([model.input], [loss, grads])
+#    loss = layer_list[-2][1].output[:, f]
+    # Create np.array with targets shape (1,MAX_BITMAP_SIZE) - no need to target.unsqueeze(0) later. Or just pass Y[0]
+    bitmap = np.zeros((1, MAX_BITMAP_SIZE))
+    # Set idxx bit
+    bitmap[0][f] = 1
+    Y = torch.tensor(bitmap)
+#    grads = K.gradients(loss, model.input)[0]
+#    iterate = K.function([model.input], [loss, grads])
     ll = 2
     while fl[0] == fl[1]:
         fl[1] = random.choice(seed_list)
 
     for index in range(ll):
         x = vectorize_file(fl[index])
-        loss_value, grads_value = iterate([x])
+        loss_value, grads_value = compute_loss_grad(model=model,  loss_fn=loss_func , sample= x, target=Y)
         idx = np.flip(np.argsort(np.absolute(grads_value), axis=1)[:, -MAX_FILE_SIZE:].reshape((MAX_FILE_SIZE,)), 0)
         #val = np.sign(grads_value[0][idx])
         val = np.random.choice([1, -1], MAX_FILE_SIZE, replace=True)
@@ -438,7 +444,7 @@ def gen_adv3_pytorch(f, fl, model, loss_func, idxx, splice):
     if splice == 1 and round_cnt != 0:
         splice_seed(fl[0], fl[1], idxx)
         x = vectorize_file('./splice_seeds/tmp_' + str(idxx))
-        loss_value, grads_value = iterate([x])
+        loss_value, grads_value = compute_loss_grad(model=model,  loss_fn=loss_func , sample= x, target=Y)
         idx = np.flip(np.argsort(np.absolute(grads_value), axis=1)[:, -MAX_FILE_SIZE:].reshape((MAX_FILE_SIZE,)), 0)
         # val = np.sign(grads_value[0][idx])
         val = np.random.choice([1, -1], MAX_FILE_SIZE, replace=True)
@@ -533,9 +539,9 @@ def gen_mutate2_pytorch(model, loss_func,  edge_num, sign):
         rand_seed2 = [seed_list[i] for i in np.random.choice(len(seed_list), edge_num, replace=False)]
 
     # function pointer for gradient computation
-#    fn = gen_adv2_pytorch if sign else gen_adv3_pytorch
-#TODO: rework gen_adv3_pytorch
-    fn = gen_adv2_pytorch
+    fn = gen_adv2_pytorch if sign else gen_adv3_pytorch
+#TODO: rework gen_adv3_pytorch - DONE
+#    fn = gen_adv2_pytorch
     
     # select output neurons to compute gradient
     interested_indice = np.random.choice(MAX_BITMAP_SIZE, edge_num)
@@ -676,19 +682,24 @@ def gen_grad(data):
 
 
 def setup_server():
-#    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-#    sock.bind((HOST, PORT))
-#    sock.listen(1)
-#    conn, addr = sock.accept()
-#    print('connected by neuzz execution moduel ' + str(addr))
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    # https://bobbyhadz.com/blog/socket-error-errno-98-address-already-in-use-in-python
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.bind((HOST, PORT))
+    sock.listen(1)
+    conn, addr = sock.accept()
+    print('connected by neuzz execution moduel ' + str(addr))
     gen_grad(b"train")
     print("Pretrain finished. Let's start!")
     conn.sendall(b"start")
     while True:
+        print("Waiting for new data...")
         data = conn.recv(1024)
         if not data:
+            print("No more date. Finishing work. Bye!")
             break
         else:
+            print("Get more data for work with. Now gen_grad(data) and conn.sendall ")
             gen_grad(data)
             conn.sendall(b"start")
     conn.close()
